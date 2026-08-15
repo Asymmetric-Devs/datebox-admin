@@ -18,6 +18,11 @@ const montserrat = Montserrat({
 export const metadata: Metadata = {
   title: "DateBox Admin | Panel de Control y Operaciones",
   description: "Plataforma de administración y moderación de DateBox",
+  icons: {
+    icon: "/logo.png",
+    shortcut: "/logo.png",
+    apple: "/logo.png",
+  },
 };
 
 export default function RootLayout({
