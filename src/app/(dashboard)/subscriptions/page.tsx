@@ -7,6 +7,7 @@ import {
   fetchAdminPlans,
   createAdminPlan,
   AdminSubscriptionsData,
+  AdminSubscriptionItem,
   SubscriptionPlan,
 } from "@/lib/api";
 import { StatCard } from "@/components/ui/StatCard";
@@ -93,10 +94,11 @@ export default function SubscriptionsPage() {
     },
   });
 
-  // Calculate Metrics
-  const activeSubs = subscriptions.filter((s) => s.status?.toLowerCase() === "authorized" || s.status?.toLowerCase() === "active").length;
-  const pendingSubs = subscriptions.filter((s) => s.status?.toLowerCase() === "pending").length;
-  const totalRevenue = activeSubs * 20000;
+  // Calculate Metrics from backend response
+  const activeSubs = metrics.authorizedCount || subscriptions.filter((s) => s.status?.toLowerCase() === "authorized" || s.status?.toLowerCase() === "active").length;
+  const pendingSubs = metrics.pendingCount || subscriptions.filter((s) => s.status?.toLowerCase() === "pending").length;
+  const pausedOrCancelledSubs = (metrics.pausedCount + metrics.cancelledCount) || subscriptions.filter((s) => s.status?.toLowerCase() === "paused" || s.status?.toLowerCase() === "cancelled").length;
+  const totalRevenue = metrics.totalRevenueEstimatedARS;
 
   const filteredSubs = subscriptions.filter((sub) => {
     const bName = sub.business?.name_business?.toLowerCase() || "";
@@ -109,6 +111,19 @@ export default function SubscriptionsPage() {
 
     return matchesSearch && matchesStatus;
   });
+
+  const getPlanDisplayName = (sub: AdminSubscriptionItem) => {
+    const rawName =
+      sub.business?.subscription ||
+      plans.find((p) => p.id === sub.plan_id || p.id.toLowerCase() === sub.plan_id?.toLowerCase())?.name ||
+      sub.plan_id ||
+      "-";
+
+    return rawName
+      .split(" ")
+      .map((word) => (word ? word.charAt(0).toUpperCase() + word.slice(1).toLowerCase() : ""))
+      .join(" ");
+  };
 
   const getStatusBadge = (status?: string) => {
     const s = status?.toLowerCase() || "";
@@ -130,7 +145,7 @@ export default function SubscriptionsPage() {
             Suscripciones y Planes
           </h1>
           <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-            Monitorea los cobros automáticos de comercios en Mercado Pago y configura la oferta de planes.
+            Monitoreo de cobros automáticos de comercios en Mercado Pago y configuración de planes.
           </p>
         </div>
 
@@ -183,7 +198,7 @@ export default function SubscriptionsPage() {
       {activeTab === "subscriptions" && (
         <div className="space-y-6">
           {/* KPI Metrics */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
             <StatCard
               title="MRR Estimado"
               value={formatCurrency(totalRevenue)}
@@ -203,6 +218,13 @@ export default function SubscriptionsPage() {
               description="Cobros en proceso de validación"
               icon={<Clock className="w-5 h-5 text-amber-500" />}
               variant={pendingSubs > 0 ? "warning" : "default"}
+            />
+            <StatCard
+              title="Pausadas / Canceladas"
+              value={pausedOrCancelledSubs}
+              description="Comercios inactivos"
+              icon={<XCircle className="w-5 h-5 text-red-500" />}
+              variant={pausedOrCancelledSubs > 0 ? "danger" : "default"}
             />
           </div>
 
@@ -266,7 +288,9 @@ export default function SubscriptionsPage() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <Badge variant="purple">{sub.plan_id}</Badge>
+                      <Badge variant="purple" className="font-semibold">
+                        {getPlanDisplayName(sub)}
+                      </Badge>
                     </TableCell>
                     <TableCell>{getStatusBadge(sub.status)}</TableCell>
                     <TableCell className="text-xs">{sub.payer_email || sub.business?.mail || "-"}</TableCell>

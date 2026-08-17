@@ -124,10 +124,13 @@ export interface CatalogItem {
   ends_at?: string | null;
   open_time?: string | null;
   close_time?: string | null;
+  horarios?: any;
   ticket_price?: number | null;
   duration_hours?: number | null;
   organizer_name?: string | null;
   google_maps_url?: string | null;
+  google_place_id?: string | null;
+  owner_id?: string | null;
   image_urls?: string[] | null;
   image_url?: string | null;
   created_at: string;
@@ -322,40 +325,38 @@ export async function createAdminPlan(payload: CreatePlanPayload): Promise<Subsc
 // -------------------------------------------------------------
 export async function fetchCatalogContent(): Promise<CatalogItem[]> {
   try {
-    const res = await fetch(`${API_URL}/events?page=1&pageSize=200`);
-    if (res.ok) {
-      const json = await res.json();
-      const events: any[] = json.data || [];
-      return events.map((ev) => ({
+    const { data, error } = await supabase
+      .from("events" as any)
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (!error && data) {
+      return data.map((ev: any) => ({
         ...ev,
         sourceId: "datebox",
         image_url: ev.image_urls?.[0] ?? null,
-        tags: (ev.tags ?? []).map((t: any) => ({
-          id: t.id,
-          name: t.name,
-          category: t.category ?? "general",
-        })),
+        tags: [],
         venue_name: ev.venue_name ?? null,
       }));
     }
   } catch (err) {
-    console.warn("API server fetch failed for events, falling back to Supabase...", err);
+    console.warn("Supabase fetch failed for events, falling back to API...", err);
   }
 
-  // Supabase fallback
-  const { data, error } = await supabase
-    .from("events" as any)
-    .select("*")
-    .order("created_at", { ascending: false });
+  // Fallback to API
+  const res = await fetch(`${API_URL}/events?page=1&pageSize=100`);
+  if (res.ok) {
+    const json = await res.json();
+    return (json.data || []).map((ev: any) => ({
+      ...ev,
+      sourceId: "datebox",
+      image_url: ev.image_urls?.[0] ?? null,
+      tags: ev.tags ?? [],
+      venue_name: ev.venue_name ?? null,
+    }));
+  }
 
-  if (error) throw error;
-  return (data || []).map((ev: any) => ({
-    ...ev,
-    sourceId: "datebox",
-    image_url: ev.image_urls?.[0] ?? null,
-    tags: [],
-    venue_name: ev.venue_name ?? null,
-  }));
+  return [];
 }
 
 export async function toggleCatalogStatus(id: string, newStatus: boolean): Promise<void> {

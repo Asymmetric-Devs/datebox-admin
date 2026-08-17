@@ -10,7 +10,7 @@ export interface StatCardProps {
     value: string;
     isPositive?: boolean;
   };
-  variant?: "default" | "success" | "warning" | "purple";
+  variant?: "default" | "success" | "warning" | "purple" | "danger";
   className?: string;
 }
 
@@ -28,6 +28,7 @@ export const StatCard: React.FC<StatCardProps> = ({
     success: "border-emerald-200/60 dark:border-emerald-900/40 bg-emerald-50/30 dark:bg-emerald-950/10",
     warning: "border-amber-200/60 dark:border-amber-900/40 bg-amber-50/30 dark:bg-amber-950/10",
     purple: "border-purple-200/60 dark:border-purple-900/40 bg-purple-50/30 dark:bg-purple-950/10",
+    danger: "border-red-200/60 dark:border-red-900/40 bg-red-50/30 dark:bg-red-950/10",
   };
 
   return (

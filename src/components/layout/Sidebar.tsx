@@ -34,7 +34,7 @@ export const navItems = [
     icon: CreditCard,
   },
   {
-    title: "Catálogo de Lugares",
+    title: "Catálogo de Eventos",
     href: "/catalog",
     icon: Compass,
   },
