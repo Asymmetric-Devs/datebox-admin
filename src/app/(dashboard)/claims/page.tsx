@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
+import { fetchAdminClaims, reviewClaim, BusinessClaimAdmin } from "@/lib/api";
 import { Table, TableHead, TableBody, TableRow, TableHeaderCell, TableCell } from "@/components/ui/Table";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -27,104 +28,24 @@ import {
 } from "lucide-react";
 import { formatDate } from "@/lib/utils";
 
-interface ClaimItem {
-  id: number;
-  business_id: string;
-  event_id: string;
-  status: "pending" | "approved" | "rejected";
-  documentation_url: string | null;
-  created_at: string;
-  reviewed_at: string | null;
-  business: {
-    id: string;
-    name_business: string;
-    name_owner: string;
-    cuit: string;
-    phone: string;
-    mail: string;
-  } | null;
-  event: {
-    id: string;
-    title: string;
-    address: string | null;
-    category: string;
-    image_urls: string[];
-  } | null;
-}
-
 export default function ClaimsPage() {
   const queryClient = useQueryClient();
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [selectedClaim, setSelectedClaim] = useState<ClaimItem | null>(null);
+  const [selectedClaim, setSelectedClaim] = useState<BusinessClaimAdmin | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   // Fetch Claims
-  const { data: claims = [], isLoading, refetch } = useQuery<ClaimItem[]>({
+  const { data: claims = [], isLoading, refetch } = useQuery<BusinessClaimAdmin[]>({
     queryKey: ["admin-claims"],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("business_claim_event")
-        .select(`
-          id,
-          business_id,
-          event_id,
-          status,
-          documentation_url,
-          created_at,
-          reviewed_at,
-          business:businesses (
-            id,
-            name_business,
-            name_owner,
-            cuit,
-            phone,
-            mail
-          ),
-          event:events (
-            id,
-            title,
-            address,
-            category,
-            image_urls
-          )
-        `)
-        .order("created_at", { ascending: false });
-
-      if (error) throw error;
-      return (data as any) || [];
-    },
+    queryFn: fetchAdminClaims,
   });
 
   // Mutation to Review Claim
   const reviewMutation = useMutation({
     mutationFn: async ({ claimId, status }: { claimId: number; status: "approved" | "rejected" }) => {
-      const claim = claims.find((c) => c.id === claimId);
-      if (!claim) throw new Error("Reclamo no encontrado");
-
-      // 1. Update claim status
-      const { error: claimError } = await supabase
-        .from("business_claim_event")
-        .update({
-          status,
-          reviewed_at: new Date().toISOString(),
-        })
-        .eq("id", claimId);
-
-      if (claimError) throw claimError;
-
-      // 2. If approved, associate business with event
-      if (status === "approved" && claim.event_id && claim.business_id) {
-        const { error: eventError } = await supabase
-          .from("events")
-          .update({ business_id: claim.business_id })
-          .eq("id", claim.event_id);
-
-        if (eventError) {
-          console.error("Error linking event with business:", eventError);
-        }
-      }
+      return reviewClaim(claimId, status);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin-claims"] });
@@ -167,7 +88,7 @@ export default function ClaimsPage() {
     return matchesSearch && matchesStatus;
   });
 
-  const getStatusBadge = (status: ClaimItem["status"]) => {
+  const getStatusBadge = (status: BusinessClaimAdmin["status"]) => {
     switch (status) {
       case "approved":
         return <Badge variant="success"><CheckCircle2 className="w-3 h-3" /> Aprobado</Badge>;
@@ -268,7 +189,7 @@ export default function ClaimsPage() {
                   </div>
                 </TableCell>
                 <TableCell className="font-mono text-xs">{claim.business?.cuit || "N/A"}</TableCell>
-                <TableCell className="text-xs text-zinc-500">{formatDate(claim.created_at)}</TableCell>
+                <TableCell className="text-xs text-zinc-500">{formatDate((claim as any).createdAt || (claim as any).created_at)}</TableCell>
                 <TableCell>{getStatusBadge(claim.status)}</TableCell>
                 <TableCell className="text-right">
                   <Button
@@ -295,26 +216,27 @@ export default function ClaimsPage() {
           isOpen={isModalOpen}
           onClose={() => setIsModalOpen(false)}
           title={`Solicitud de Reclamo #${selectedClaim.id}`}
-          description={`Creada el ${formatDate(selectedClaim.created_at)}`}
+          description={`Creada el ${formatDate((selectedClaim as any).createdAt || (selectedClaim as any).created_at)}`}
           size="lg"
         >
           <div className="space-y-6">
             {actionError && (
-              <div className="rounded-xl border border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-950/30 p-3 text-xs text-red-600 dark:text-red-400">
+              <div className="rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-600 dark:text-red-400">
                 {actionError}
               </div>
             )}
 
+            {/* Business & Event Details Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Business Info Card */}
               <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 space-y-3 bg-zinc-50/50 dark:bg-zinc-900/40">
                 <div className="flex items-center gap-2 font-heading font-bold text-sm text-zinc-900 dark:text-zinc-100">
                   <Building className="w-4 h-4 text-purple-500" />
-                  Datos del Comercio
+                  Comercio Solicitante
                 </div>
                 <div className="space-y-1.5 text-xs">
                   <div>
-                    <span className="text-zinc-400 block text-[10px] uppercase font-bold">Razón Social</span>
+                    <span className="text-zinc-400 block text-[10px] uppercase font-bold">Razón Social / Nombre</span>
                     <span className="font-semibold text-zinc-800 dark:text-zinc-200">{selectedClaim.business?.name_business || "N/A"}</span>
                   </div>
                   <div>
@@ -354,7 +276,7 @@ export default function ClaimsPage() {
                     </div>
                   </div>
                 ) : (
-                  <p className="text-xs text-zinc-400">ID del evento solicitado: {selectedClaim.event_id}</p>
+                  <p className="text-xs text-zinc-400">ID del evento solicitado: {(selectedClaim as any).eventRequested || (selectedClaim as any).event_id}</p>
                 )}
               </div>
             </div>
@@ -373,8 +295,8 @@ export default function ClaimsPage() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => handleOpenDoc(selectedClaim.documentation_url)}
-                disabled={!selectedClaim.documentation_url}
+                onClick={() => handleOpenDoc((selectedClaim as any).documentationURL || (selectedClaim as any).documentation_url)}
+                disabled={!(selectedClaim as any).documentationURL && !(selectedClaim as any).documentation_url}
               >
                 <ExternalLink className="w-3.5 h-3.5 mr-1" />
                 Abrir PDF

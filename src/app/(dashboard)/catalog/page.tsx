@@ -3,6 +3,7 @@
 import React, { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
+import { fetchCatalogContent, toggleCatalogStatus, CatalogItem } from "@/lib/api";
 import { Table, TableHead, TableBody, TableRow, TableHeaderCell, TableCell } from "@/components/ui/Table";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -25,22 +26,6 @@ import {
   Image as ImageIcon,
 } from "lucide-react";
 
-interface CatalogItem {
-  id: string;
-  title: string;
-  description: string | null;
-  category: string;
-  address: string | null;
-  latitude: number | null;
-  longitude: number | null;
-  is_temporary: boolean;
-  status: boolean;
-  image_urls: string[] | null;
-  venue_name: string | null;
-  created_at: string;
-  tags?: { name: string }[];
-}
-
 export default function CatalogPage() {
   const queryClient = useQueryClient();
   const [searchTerm, setSearchTerm] = useState("");
@@ -49,46 +34,21 @@ export default function CatalogPage() {
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
   const [selectedItem, setSelectedItem] = useState<CatalogItem | null>(null);
 
-  // Fetch Events / Places from DB
+  // Fetch Events / Places from API / DB
   const { data: items = [], isLoading, refetch } = useQuery<CatalogItem[]>({
     queryKey: ["admin-catalog"],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("events")
-        .select(`
-          id,
-          title,
-          description,
-          category,
-          address,
-          latitude,
-          longitude,
-          is_temporary,
-          status,
-          image_urls,
-          venue_name,
-          created_at
-        `)
-        .order("created_at", { ascending: false });
-
-      if (error) throw error;
-      return (data as any) || [];
-    },
+    queryFn: fetchCatalogContent,
   });
 
   // Toggle status mutation
   const toggleStatusMutation = useMutation({
     mutationFn: async ({ id, newStatus }: { id: string; newStatus: boolean }) => {
-      const { error } = await supabase
-        .from("events")
-        .update({ status: newStatus })
-        .eq("id", id);
-      if (error) throw error;
+      return toggleCatalogStatus(id, newStatus);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin-catalog"] });
       if (selectedItem) {
-        setSelectedItem((prev) => prev ? { ...prev, status: !prev.status } : null);
+        setSelectedItem((prev) => (prev ? { ...prev, status: !prev.status } : null));
       }
     },
   });

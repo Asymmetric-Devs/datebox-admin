@@ -2,7 +2,13 @@
 
 import React, { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/lib/supabase";
+import {
+  fetchAdminSubscriptions,
+  fetchAdminPlans,
+  createAdminPlan,
+  AdminSubscriptionsData,
+  SubscriptionPlan,
+} from "@/lib/api";
 import { StatCard } from "@/components/ui/StatCard";
 import { Table, TableHead, TableBody, TableRow, TableHeaderCell, TableCell } from "@/components/ui/Table";
 import { Button } from "@/components/ui/Button";
@@ -27,37 +33,6 @@ import {
 } from "lucide-react";
 import { formatCurrency, formatDate } from "@/lib/utils";
 
-interface SubscriptionItem {
-  id: string;
-  merchant_id: string;
-  plan_id: string;
-  status: string;
-  payer_email: string | null;
-  mp_preapproval_id: string | null;
-  checkout_url: string | null;
-  created_at: string;
-  business?: {
-    name_business: string;
-    name_owner: string;
-    cuit: string;
-    mail: string;
-  } | null;
-}
-
-interface PlanItem {
-  id: string;
-  name: string;
-  reason?: string;
-  price_ars: number;
-  frequency: number;
-  frequency_type: string;
-  max_venues: number;
-  max_special_events_per_month: number;
-  ai_boost_percentage: number;
-  status?: string;
-  init_point?: string;
-}
-
 export default function SubscriptionsPage() {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<"subscriptions" | "plans">("subscriptions");
@@ -70,117 +45,51 @@ export default function SubscriptionsPage() {
     name: "",
     reason: "",
     price_ars: 25000,
-    frequency_type: "months",
+    frequency_type: "months" as "months" | "days",
     max_venues: 1,
     max_special_events_per_month: 2,
     ai_boost_percentage: 15,
   });
 
   // Query 1: Subscriptions
-  const { data: subscriptions = [], isLoading: isLoadingSubs, refetch: refetchSubs } = useQuery<SubscriptionItem[]>({
+  const { data: subsData, isLoading: isLoadingSubs, refetch: refetchSubs } = useQuery<AdminSubscriptionsData>({
     queryKey: ["admin-subscriptions"],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("merchant_subscriptions")
-        .select(`
-          id,
-          merchant_id,
-          plan_id,
-          status,
-          payer_email,
-          mp_preapproval_id,
-          checkout_url,
-          created_at,
-          business:businesses (
-            name_business,
-            name_owner,
-            cuit,
-            mail
-          )
-        `)
-        .order("created_at", { ascending: false });
-
-      if (error) {
-        console.warn("Could not fetch merchant_subscriptions directly:", error);
-        return [];
-      }
-      return (data as any) || [];
-    },
+    queryFn: fetchAdminSubscriptions,
   });
+
+  const subscriptions = subsData?.subscriptions || [];
+  const metrics = subsData?.metrics || {
+    totalRevenueEstimatedARS: 0,
+    totalSubscriptions: 0,
+    authorizedCount: 0,
+    pendingCount: 0,
+    pausedCount: 0,
+    cancelledCount: 0,
+  };
 
   // Query 2: Plans
-  const { data: plans = [], isLoading: isLoadingPlans, refetch: refetchPlans } = useQuery<PlanItem[]>({
+  const { data: plans = [], isLoading: isLoadingPlans, refetch: refetchPlans } = useQuery<SubscriptionPlan[]>({
     queryKey: ["admin-plans"],
-    queryFn: async () => {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8787";
-      try {
-        const res = await fetch(`${apiUrl}/mercadopago/plans`);
-        if (res.ok) {
-          const json = await res.json();
-          return json.plans || [];
-        }
-      } catch (e) {
-        console.warn("Could not reach API plans endpoint:", e);
-      }
-      // Fallback default plans
-      return [
-        {
-          id: "plan-base",
-          name: "Plan Base",
-          reason: "Suscripción DateBox - Plan Base",
-          price_ars: 0,
-          frequency: 1,
-          frequency_type: "months",
-          max_venues: 1,
-          max_special_events_per_month: 0,
-          ai_boost_percentage: 0,
-          status: "active",
-        },
-        {
-          id: "plan-grow",
-          name: "Plan Grow",
-          reason: "Suscripción DateBox - Plan Grow",
-          price_ars: 20000,
-          frequency: 1,
-          frequency_type: "months",
-          max_venues: 2,
-          max_special_events_per_month: 2,
-          ai_boost_percentage: 15,
-          status: "active",
-        },
-        {
-          id: "plan-premium",
-          name: "Plan Premium",
-          reason: "Suscripción DateBox - Plan Premium",
-          price_ars: 45000,
-          frequency: 1,
-          frequency_type: "months",
-          max_venues: 5,
-          max_special_events_per_month: 6,
-          ai_boost_percentage: 35,
-          status: "active",
-        },
-      ];
-    },
+    queryFn: fetchAdminPlans,
   });
 
-  // Create Plan Mutation
+  // Mutation: Create Plan
   const createPlanMutation = useMutation({
     mutationFn: async (payload: typeof planForm) => {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8787";
-      const res = await fetch(`${apiUrl}/mercadopago/plans`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        throw new Error("No se pudo crear el plan en Mercado Pago");
-      }
-      return res.json();
+      return createAdminPlan(payload);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin-plans"] });
       setIsCreatePlanOpen(false);
+      setPlanForm({
+        name: "",
+        reason: "",
+        price_ars: 25000,
+        frequency_type: "months",
+        max_venues: 1,
+        max_special_events_per_month: 2,
+        ai_boost_percentage: 15,
+      });
     },
   });
 
@@ -428,16 +337,18 @@ export default function SubscriptionsPage() {
                   </div>
                 </div>
 
-                {plan.init_point && (
+                {plan.init_point ? (
                   <Button
                     variant="outline"
                     size="sm"
                     className="w-full text-xs"
-                    onClick={() => window.open(plan.init_point, "_blank")}
+                    onClick={() => {
+                      if (plan.init_point) window.open(plan.init_point, "_blank");
+                    }}
                   >
                     Ver Checkout Directo <ExternalLink className="w-3 h-3 ml-1" />
                   </Button>
-                )}
+                ) : null}
               </CardContent>
             </Card>
           ))}

@@ -3,7 +3,6 @@
 import React from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { supabase } from "@/lib/supabase";
 import { StatCard } from "@/components/ui/StatCard";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -20,6 +19,11 @@ import {
   Clock,
   Sparkles,
 } from "lucide-react";
+import {
+  fetchAdminClaims,
+  fetchAdminSubscriptions,
+  fetchCatalogContent,
+} from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
 
 export default function OverviewPage() {
@@ -27,13 +31,10 @@ export default function OverviewPage() {
   const { data: claimsData } = useQuery({
     queryKey: ["dashboard-claims-stats"],
     queryFn: async () => {
-      const { data, count, error } = await supabase
-        .from("business_claim_event")
-        .select("id, status", { count: "exact" });
-      if (error) throw error;
-      const pending = (data || []).filter((c) => c.status === "pending").length;
-      const approved = (data || []).filter((c) => c.status === "approved").length;
-      return { total: count || 0, pending, approved };
+      const claims = await fetchAdminClaims();
+      const pending = claims.filter((c) => c.status === "pending").length;
+      const approved = claims.filter((c) => c.status === "approved").length;
+      return { total: claims.length, pending, approved };
     },
   });
 
@@ -41,15 +42,12 @@ export default function OverviewPage() {
   const { data: subsData } = useQuery({
     queryKey: ["dashboard-subs-stats"],
     queryFn: async () => {
-      const { data, count, error } = await supabase
-        .from("merchant_subscriptions")
-        .select("id, status, plan_id", { count: "exact" });
-      if (error) throw error;
-      const active = (data || []).filter(
+      const { subscriptions, metrics } = await fetchAdminSubscriptions();
+      const active = metrics?.authorizedCount ?? subscriptions.filter(
         (s) => s.status === "authorized" || s.status === "active"
       ).length;
-      const mrr = active * 20000; // base standard plan
-      return { total: count || 0, active, mrr };
+      const mrr = metrics?.totalRevenueEstimatedARS ?? active * 25000;
+      return { total: subscriptions.length, active, mrr };
     },
   });
 
@@ -57,11 +55,8 @@ export default function OverviewPage() {
   const { data: catalogData } = useQuery({
     queryKey: ["dashboard-catalog-stats"],
     queryFn: async () => {
-      const { count, error } = await supabase
-        .from("events")
-        .select("id", { count: "exact", head: true });
-      if (error) throw error;
-      return { totalEvents: count || 0 };
+      const items = await fetchCatalogContent();
+      return { totalEvents: items.length };
     },
   });
 
