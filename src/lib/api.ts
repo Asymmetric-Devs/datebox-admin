@@ -240,16 +240,108 @@ export async function fetchAdminSubscriptions(): Promise<AdminSubscriptionsData>
       return await res.json();
     }
   } catch (err) {
-    console.warn("API server fetch failed for subscriptions, falling back...", err);
+    console.warn("API server fetch failed for subscriptions, falling back to Supabase...", err);
   }
 
-  // Fallback direct query
-  const { data: subs, error } = await supabase
-    .from("merchant_subscriptions" as any)
-    .select("*")
-    .order("created_at", { ascending: false });
+  // Fallback direct query to Supabase with full business and plan mapping
+  try {
+    const { data: subs, error: subsError } = await supabase
+      .from("merchant_subscriptions" as any)
+      .select("*")
+      .order("created_at", { ascending: false });
 
-  if (error || !subs) {
+    if (subsError || !subs) {
+      console.error("Supabase merchant_subscriptions query error:", subsError);
+      throw subsError || new Error("No se pudieron obtener las suscripciones");
+    }
+
+    const merchantIds = Array.from(new Set(subs.map((s: any) => s.merchant_id).filter(Boolean)));
+    const businessMap: Record<string, any> = {};
+
+    if (merchantIds.length > 0) {
+      const { data: businesses, error: busError } = await supabase
+        .from("businesses" as any)
+        .select("*")
+        .in("id", merchantIds);
+
+      if (!busError && businesses) {
+        businesses.forEach((b: any) => {
+          businessMap[b.id] = b;
+        });
+      }
+    }
+
+    // Fetch plan prices
+    const { data: plans } = await supabase
+      .from("subscription_plans" as any)
+      .select("id, price_ars, name");
+
+    const planPriceMap: Record<string, number> = {};
+    (plans || []).forEach((p: any) => {
+      planPriceMap[p.id] = Number(p.price_ars) || 0;
+      planPriceMap[p.id.toLowerCase()] = Number(p.price_ars) || 0;
+    });
+
+    let authorizedCount = 0;
+    let pendingCount = 0;
+    let pausedCount = 0;
+    let cancelledCount = 0;
+    let totalRevenueEstimatedARS = 0;
+
+    const enrichedSubs: AdminSubscriptionItem[] = subs.map((sub: any) => {
+      const b = businessMap[sub.merchant_id] || null;
+      const status = sub.status || "pending";
+      const planId = sub.plan_id || "base";
+
+      if (status === "authorized") {
+        authorizedCount++;
+        totalRevenueEstimatedARS += planPriceMap[planId] || planPriceMap[planId.toLowerCase()] || 0;
+      } else if (status === "pending") {
+        pendingCount++;
+      } else if (status === "paused") {
+        pausedCount++;
+      } else if (status === "cancelled") {
+        cancelledCount++;
+      }
+
+      return {
+        id: sub.id,
+        merchant_id: sub.merchant_id,
+        plan_id: sub.plan_id,
+        status: sub.status,
+        mp_preapproval_id: sub.mp_preapproval_id || null,
+        payer_email: sub.payer_email || null,
+        checkout_url: sub.checkout_url || null,
+        next_payment_date: sub.next_payment_date || null,
+        created_at: sub.created_at,
+        updated_at: sub.updated_at || null,
+        business: b
+          ? {
+              id: b.id,
+              name_business: b.name_business,
+              name_owner: b.name_owner,
+              cuit: b.cuit,
+              phone: b.phone,
+              mail: b.mail,
+              subscription: b.subscription,
+            }
+          : null,
+      };
+    });
+
+    return {
+      subscriptions: enrichedSubs,
+      metrics: {
+        totalRevenueEstimatedARS,
+        totalSubscriptions: enrichedSubs.length,
+        authorizedCount,
+        pendingCount,
+        pausedCount,
+        cancelledCount,
+      },
+    };
+  } catch (fallbackErr) {
+    console.error("Direct Supabase fallback failed for subscriptions:", fallbackErr);
     return {
       subscriptions: [],
       metrics: {
@@ -262,23 +354,6 @@ export async function fetchAdminSubscriptions(): Promise<AdminSubscriptionsData>
       },
     };
   }
-
-  const authorized = subs.filter((s: any) => s.status === "authorized").length;
-  const pending = subs.filter((s: any) => s.status === "pending").length;
-  const paused = subs.filter((s: any) => s.status === "paused").length;
-  const cancelled = subs.filter((s: any) => s.status === "cancelled").length;
-
-  return {
-    subscriptions: subs,
-    metrics: {
-      totalRevenueEstimatedARS: authorized * 25000,
-      totalSubscriptions: subs.length,
-      authorizedCount: authorized,
-      pendingCount: pending,
-      pausedCount: paused,
-      cancelledCount: cancelled,
-    },
-  };
 }
 
 export async function fetchAdminPlans(): Promise<SubscriptionPlan[]> {
