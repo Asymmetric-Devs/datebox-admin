@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --port 3002",
-    "build": "next build",
-    "start": "next start --port 3002",
-    "lint": "next lint"
+    "dev": "cross-env NEXT_IGNORE_INCORRECT_LOCKFILE=1 next dev --port 3002",
+    "build": "cross-env NEXT_IGNORE_INCORRECT_LOCKFILE=1 next build",
+    "start": "cross-env NEXT_IGNORE_INCORRECT_LOCKFILE=1 next start --port 3002",
+    "lint": "cross-env NEXT_IGNORE_INCORRECT_LOCKFILE=1 next lint"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",
@@ -24,11 +24,13 @@
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
     "autoprefixer": "^10.4.20",
+    "cross-env": "^10.1.0",
     "postcss": "^8.5.3",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.8.2"
   },
   "optionalDependencies": {
+    "@next/swc-linux-x64-gnu": "^15.5.23",
     "@next/swc-win32-x64-msvc": "^15.5.23"
   }
 }
