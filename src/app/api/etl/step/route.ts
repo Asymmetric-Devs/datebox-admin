@@ -6,7 +6,7 @@ import os from "os";
 import { getEtlDir, getPythonExecutable } from "@/lib/etlRunner";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 1200; // 20 minutes max for AI enrichment batches
+export const maxDuration = 300; // 5 minutes max (Vercel Hobby plan limit)
 
 export async function POST(req: NextRequest) {
   let tempInputPath: string | null = null;
@@ -83,7 +83,7 @@ export async function POST(req: NextRequest) {
       execSync(cmd, {
         cwd: etlDir,
         encoding: "utf-8",
-        timeout: 1200000, // 20 minutes (matches maxDuration = 1200)
+        timeout: 300000, // 5 minutes (matches maxDuration = 300)
         maxBuffer: 50 * 1024 * 1024,
       });
     } catch (execErr: any) {
