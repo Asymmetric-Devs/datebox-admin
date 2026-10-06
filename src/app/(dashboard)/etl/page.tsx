@@ -91,6 +91,7 @@ interface NormalizedEventItem {
     matched_id?: string | null;
     reason?: string | null;
   } | null;
+  db_status?: "new" | "unchanged" | "updated";
   _excluded?: boolean;
 }
 
@@ -159,6 +160,7 @@ export default function EtlPage() {
     },
   ]);
   const terminalEndRef = useRef<HTMLDivElement>(null);
+  const stepTerminalEndRef = useRef<HTMLDivElement>(null);
   const [autoScrollLogs, setAutoScrollLogs] = useState(true);
 
   // Step-by-Step Pipeline State
@@ -189,12 +191,108 @@ export default function EtlPage() {
   const [importResults, setImportResults] = useState<{ count: number; error?: string } | null>(null);
   const [isPersistConfirmOpen, setIsPersistConfirmOpen] = useState(false);
 
+  const ETL_STORAGE_KEY = "datebox_admin_etl_wizard_state_v2";
+  const [isRestored, setIsRestored] = useState(false);
+
+  // Restore state from localStorage on mount
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(ETL_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed.currentStep) setCurrentStep(parsed.currentStep);
+        if (parsed.selectedCity) setSelectedCity(parsed.selectedCity);
+        if (parsed.startDate) setStartDate(parsed.startDate);
+        if (parsed.daysAhead) setDaysAhead(parsed.daysAhead);
+        if (typeof parsed.isDryRun === "boolean") setIsDryRun(parsed.isDryRun);
+        if (typeof parsed.skipAi === "boolean") setSkipAi(parsed.skipAi);
+        if (Array.isArray(parsed.selectedSources) && parsed.selectedSources.length > 0) {
+          setSelectedSources(parsed.selectedSources);
+        }
+        if (parsed.extractedEventsBySource) setExtractedEventsBySource(parsed.extractedEventsBySource);
+        if (parsed.deduplicatedEventsBySource) setDeduplicatedEventsBySource(parsed.deduplicatedEventsBySource);
+        if (Array.isArray(parsed.deduplicatedDetails)) setDeduplicatedDetails(parsed.deduplicatedDetails);
+        if (parsed.enrichedEventsBySource) setEnrichedEventsBySource(parsed.enrichedEventsBySource);
+        if (Array.isArray(parsed.aiDuplicatesList)) setAiDuplicatesList(parsed.aiDuplicatesList);
+        if (parsed.previewStats) setPreviewStats(parsed.previewStats);
+        if (parsed.persistedResults) setPersistedResults(parsed.persistedResults);
+        if (Array.isArray(parsed.logs) && parsed.logs.length > 0) setLogs(parsed.logs);
+      }
+    } catch (e) {
+      console.error("Error al restaurar estado del ETL desde localStorage:", e);
+    } finally {
+      setIsRestored(true);
+    }
+  }, []);
+
+  // Save state to localStorage on changes
+  useEffect(() => {
+    if (!isRestored) return;
+    try {
+      const stateToSave = {
+        currentStep,
+        selectedCity,
+        startDate,
+        daysAhead,
+        isDryRun,
+        skipAi,
+        selectedSources,
+        extractedEventsBySource,
+        deduplicatedEventsBySource,
+        deduplicatedDetails,
+        enrichedEventsBySource,
+        aiDuplicatesList,
+        previewStats,
+        persistedResults,
+        logs: logs.slice(-150),
+        updatedAt: new Date().toISOString(),
+      };
+      localStorage.setItem(ETL_STORAGE_KEY, JSON.stringify(stateToSave));
+    } catch (e) {
+      console.error("Error al guardar estado del ETL en localStorage:", e);
+    }
+  }, [
+    isRestored,
+    currentStep,
+    selectedCity,
+    startDate,
+    daysAhead,
+    isDryRun,
+    skipAi,
+    selectedSources,
+    extractedEventsBySource,
+    deduplicatedEventsBySource,
+    deduplicatedDetails,
+    enrichedEventsBySource,
+    aiDuplicatesList,
+    previewStats,
+    persistedResults,
+    logs,
+  ]);
+
+  // Warn user if leaving/refreshing page while ETL is active
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isStepLoading || isRunningAll) {
+        e.preventDefault();
+        e.returnValue = "Hay un proceso del ETL en ejecución. ¿Estás seguro de que deseas salir?";
+        return e.returnValue;
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [isStepLoading, isRunningAll]);
+
   // Auto-scroll terminal
   useEffect(() => {
-    if (autoScrollLogs && terminalEndRef.current) {
-      terminalEndRef.current.scrollIntoView({ behavior: "smooth" });
+    if (autoScrollLogs) {
+      if (activeTab === "terminal" && terminalEndRef.current) {
+        terminalEndRef.current.scrollIntoView({ behavior: "smooth" });
+      } else if (activeTab === "step" && stepTerminalEndRef.current) {
+        stepTerminalEndRef.current.scrollIntoView({ behavior: "smooth" });
+      }
     }
-  }, [logs, autoScrollLogs]);
+  }, [logs, autoScrollLogs, activeTab]);
 
   // Add Log helper
   const addLog = (level: "info" | "success" | "warning" | "error", message: string, source = "ETL") => {
@@ -208,6 +306,111 @@ export default function EtlPage() {
         message,
       },
     ]);
+  };
+
+  // Reset Wizard State
+  const handleResetWizard = () => {
+    if (isStepLoading || isRunningAll) {
+      alert("Hay un proceso en ejecución. Espera a que finalice antes de reiniciar.");
+      return;
+    }
+    if (!window.confirm("¿Seguro que deseas reiniciar el asistente del ETL? Se borrará el progreso actual no guardado.")) {
+      return;
+    }
+    try {
+      localStorage.removeItem(ETL_STORAGE_KEY);
+    } catch {}
+    setCurrentStep(1);
+    setExtractedEventsBySource({});
+    setDeduplicatedEventsBySource({});
+    setDeduplicatedDetails([]);
+    setEnrichedEventsBySource({});
+    setAiDuplicatesList([]);
+    setPreviewStats(null);
+    setPersistedResults(null);
+    setStepError(null);
+    addLog("info", "Asistente reiniciado. Listo para iniciar una nueva ejecución.", "Asistente");
+  };
+
+  // Recover previous step data from server disk cache
+  const handleRecoverFromServer = async () => {
+    setIsStepLoading(true);
+    setStepError(null);
+    addLog("info", "Consultando ejecuciones previas guardadas en el disco del servidor...", "Recuperación");
+
+    try {
+      const listRes = await fetch("/api/etl/step");
+      const listData = await listRes.json();
+      if (!listData.success || !listData.steps || Object.keys(listData.steps).length === 0) {
+        throw new Error("No hay ejecuciones previas guardadas en el disco del servidor.");
+      }
+      const steps = listData.steps;
+      let targetStep = 1;
+      const recoveredMsgs: string[] = [];
+
+      // Extract
+      if (steps.extract) {
+        const res = await fetch("/api/etl/step?action=extract");
+        const d = await res.json();
+        if (d.success && d.data) {
+          setExtractedEventsBySource(d.data.events_by_source || {});
+          targetStep = 2;
+          recoveredMsgs.push(`Paso 1 (${d.data.total_extracted || 0} eventos)`);
+        }
+      }
+
+      // Deduplicate
+      if (steps.deduplicate) {
+        const res = await fetch("/api/etl/step?action=deduplicate");
+        const d = await res.json();
+        if (d.success && d.data) {
+          setDeduplicatedEventsBySource(d.data.events_by_source || {});
+          setDeduplicatedDetails(d.data.deduplicated_details || []);
+          targetStep = 3;
+          recoveredMsgs.push(`Paso 2 (${d.data.total_unique || 0} únicos)`);
+        }
+      }
+
+      // Enrich
+      if (steps.enrich) {
+        const res = await fetch("/api/etl/step?action=enrich");
+        const d = await res.json();
+        if (d.success && d.data) {
+          const rawEventsBySource: Record<string, NormalizedEventItem[]> = d.data.events_by_source || {};
+          const processed: Record<string, NormalizedEventItem[]> = {};
+          for (const [src, list] of Object.entries(rawEventsBySource)) {
+            processed[src] = ((list as any[]) || []).map((ev) => ({
+              ...ev,
+              _excluded:
+                !!(ev.ai_duplicate_match && ev.ai_duplicate_match.is_duplicate) ||
+                ev.db_status === "unchanged",
+            }));
+          }
+          setEnrichedEventsBySource(processed);
+          setAiDuplicatesList(d.data.ai_duplicates || []);
+          targetStep = 4;
+          recoveredMsgs.push(`Paso 3 (${d.data.total_valid || 0} enriquecidos)`);
+        }
+      }
+
+      // Preview
+      if (steps.preview) {
+        const res = await fetch("/api/etl/step?action=preview");
+        const d = await res.json();
+        if (d.success && d.data) {
+          setPreviewStats(d.data);
+          recoveredMsgs.push("Paso 4 (Previsualización)");
+        }
+      }
+
+      setCurrentStep(targetStep);
+      addLog("success", `Datos recuperados del servidor con éxito: ${recoveredMsgs.join(", ")}.`, "Recuperación");
+    } catch (err: any) {
+      setStepError(err.message);
+      addLog("error", `Error al recuperar datos del servidor: ${err.message}`, "Recuperación");
+    } finally {
+      setIsStepLoading(false);
+    }
   };
 
   // Toggle Source Selection
@@ -294,33 +497,118 @@ export default function EtlPage() {
     }
   };
 
+  // Helper to execute a step via streaming SSE, dispatching live logs to state
+  const executeStepWithStream = async (
+    body: {
+      action: string;
+      sources?: string[];
+      city?: string;
+      startDate?: string;
+      daysAhead?: number;
+      skipAi?: boolean;
+      dryRun?: boolean;
+      eventsBySource?: Record<string, any[]>;
+    },
+    stepLabel: string
+  ): Promise<any> => {
+    const res = await fetch("/api/etl/step", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      let errorMsg = `Error en servidor (${res.status})`;
+      try {
+        const errorJson = await res.json();
+        if (errorJson.error) errorMsg = errorJson.error;
+      } catch {}
+      throw new Error(errorMsg);
+    }
+
+    if (!res.body) {
+      throw new Error("Respuesta del servidor sin stream de datos");
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finalResult: any = null;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() || "";
+
+      for (const part of parts) {
+        const trimmed = part.trim();
+        if (!trimmed.startsWith("data: ")) continue;
+        try {
+          const event = JSON.parse(trimmed.slice(6));
+          if (event.type === "log") {
+            addLog(event.level || "info", event.message, stepLabel);
+          } else if (event.type === "result") {
+            finalResult = event.data;
+          } else if (event.type === "error") {
+            throw new Error(event.error || "Error durante la ejecución del paso");
+          }
+        } catch (err: any) {
+          if (err.message && !err.message.includes("JSON")) {
+            throw err;
+          }
+        }
+      }
+    }
+
+    if (buffer.trim().startsWith("data: ")) {
+      try {
+        const event = JSON.parse(buffer.trim().slice(6));
+        if (event.type === "result") {
+          finalResult = event.data;
+        } else if (event.type === "error") {
+          throw new Error(event.error || "Error durante la ejecución del paso");
+        }
+      } catch (err: any) {
+        if (err.message && !err.message.includes("JSON")) {
+          throw err;
+        }
+      }
+    }
+
+    if (!finalResult) {
+      throw new Error(`El paso '${body.action}' finalizó sin devolver datos de resultado.`);
+    }
+
+    return finalResult;
+  };
+
   // Step-by-Step Handlers
   const handleExecuteStep1Extract = async () => {
     setIsStepLoading(true);
     setStepError(null);
-    addLog("info", `Ejecutando Paso 1: Extracción desde [${selectedSources.join(", ")}]...`);
+    addLog("info", `Ejecutando Paso 1: Extracción desde [${selectedSources.join(", ")}]...`, "Paso 1");
 
     try {
-      const res = await fetch("/api/etl/step", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const resultData = await executeStepWithStream(
+        {
           action: "extract",
           sources: selectedSources,
           city: selectedCity,
           startDate,
           daysAhead,
-        }),
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || "Error en extracción");
+        },
+        "Paso 1"
+      );
 
-      setExtractedEventsBySource(data.data.events_by_source || {});
-      addLog("success", `Paso 1 completado. Total eventos extraídos: ${data.data.total_extracted}`);
+      setExtractedEventsBySource(resultData.events_by_source || {});
+      addLog("success", `Paso 1 completado. Total eventos extraídos: ${resultData.total_extracted}`, "Paso 1");
       setCurrentStep(2);
     } catch (err: any) {
       setStepError(err.message);
-      addLog("error", `Error en Paso 1: ${err.message}`);
+      addLog("error", `Error en Paso 1: ${err.message}`, "Paso 1");
     } finally {
       setIsStepLoading(false);
     }
@@ -329,31 +617,29 @@ export default function EtlPage() {
   const handleExecuteStep2Deduplicate = async () => {
     setIsStepLoading(true);
     setStepError(null);
-    addLog("info", "Ejecutando Paso 2: Deduplicación cruzada y geocodificación preliminar OSM...");
+    addLog("info", "Ejecutando Paso 2: Deduplicación cruzada y geocodificación preliminar OSM...", "Paso 2");
 
     try {
-      const res = await fetch("/api/etl/step", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const resultData = await executeStepWithStream(
+        {
           action: "deduplicate",
           city: selectedCity,
           eventsBySource: extractedEventsBySource,
-        }),
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || "Error en deduplicación");
+        },
+        "Paso 2"
+      );
 
-      setDeduplicatedEventsBySource(data.data.events_by_source || {});
-      setDeduplicatedDetails(data.data.deduplicated_details || []);
+      setDeduplicatedEventsBySource(resultData.events_by_source || {});
+      setDeduplicatedDetails(resultData.deduplicated_details || []);
       addLog(
         "success",
-        `Paso 2 completado. Únicos: ${data.data.total_unique} | Duplicados fusionados/omitidos: ${data.data.total_deduplicated}`
+        `Paso 2 completado. Únicos: ${resultData.total_unique} | Duplicados fusionados/omitidos: ${resultData.total_deduplicated}`,
+        "Paso 2"
       );
       setCurrentStep(3);
     } catch (err: any) {
       setStepError(err.message);
-      addLog("error", `Error en Paso 2: ${err.message}`);
+      addLog("error", `Error en Paso 2: ${err.message}`, "Paso 2");
     } finally {
       setIsStepLoading(false);
     }
@@ -366,43 +652,44 @@ export default function EtlPage() {
       "info",
       performAi
         ? "Ejecutando Paso 3: Enriquecimiento con Gemini AI y detección de duplicados con contexto de base de datos..."
-        : "Paso 3: Conservando datos estructurales nativos (0 llamadas a IA)..."
+        : "Paso 3: Conservando datos estructurales nativos (0 llamadas a IA)...",
+      "Paso 3"
     );
 
     try {
-      const res = await fetch("/api/etl/step", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const resultData = await executeStepWithStream(
+        {
           action: "enrich",
           city: selectedCity,
           skipAi: !performAi,
           startDate,
           eventsBySource: deduplicatedEventsBySource,
-        }),
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || "Error en enriquecimiento");
+        },
+        "Paso 3"
+      );
 
-      const rawEventsBySource: Record<string, NormalizedEventItem[]> = data.data.events_by_source || {};
+      const rawEventsBySource: Record<string, NormalizedEventItem[]> = resultData.events_by_source || {};
       const processed: Record<string, NormalizedEventItem[]> = {};
       for (const [src, list] of Object.entries(rawEventsBySource)) {
         processed[src] = (list || []).map((ev) => ({
           ...ev,
-          _excluded: !!(ev.ai_duplicate_match && ev.ai_duplicate_match.is_duplicate),
+          _excluded:
+            !!(ev.ai_duplicate_match && ev.ai_duplicate_match.is_duplicate) ||
+            ev.db_status === "unchanged",
         }));
       }
 
       setEnrichedEventsBySource(processed);
-      setAiDuplicatesList(data.data.ai_duplicates || []);
+      setAiDuplicatesList(resultData.ai_duplicates || []);
       addLog(
         "success",
-        `Paso 3 completado. Eventos válidos listos para revisión: ${data.data.total_valid} | Duplicados de BD detectados por IA: ${data.data.total_ai_duplicates}`
+        `Paso 3 completado. Eventos válidos listos para revisión: ${resultData.total_valid} | Duplicados de BD detectados por IA: ${resultData.total_ai_duplicates}`,
+        "Paso 3"
       );
       setCurrentStep(4);
     } catch (err: any) {
       setStepError(err.message);
-      addLog("error", `Error en Paso 3: ${err.message}`);
+      addLog("error", `Error en Paso 3: ${err.message}`, "Paso 3");
     } finally {
       setIsStepLoading(false);
     }
@@ -411,28 +698,25 @@ export default function EtlPage() {
   const handleExecuteStep4Preview = async () => {
     setIsStepLoading(true);
     setStepError(null);
-    addLog("info", "Generando estadísticas preliminares y actualizando etl_report.md...");
+    addLog("info", "Generando estadísticas preliminares y actualizando etl_report.md...", "Paso 4");
 
     try {
-      const res = await fetch("/api/etl/step", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const resultData = await executeStepWithStream(
+        {
           action: "preview",
           startDate,
           dryRun: isDryRun,
           eventsBySource: enrichedEventsBySource,
-        }),
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || "Error en preview");
+        },
+        "Paso 4"
+      );
 
-      setPreviewStats(data.data);
-      addLog("success", `Reporte estructural actualizado en: ${data.data.report_path}`);
+      setPreviewStats(resultData);
+      addLog("success", `Reporte estructural actualizado en: ${resultData.report_path}`, "Paso 4");
       refetchReport();
     } catch (err: any) {
       setStepError(err.message);
-      addLog("error", `Error en Preview: ${err.message}`);
+      addLog("error", `Error en Preview: ${err.message}`, "Paso 4");
     } finally {
       setIsStepLoading(false);
     }
@@ -444,10 +728,10 @@ export default function EtlPage() {
     setIsPersistConfirmOpen(false);
     addLog("info", "Iniciando persistencia segura en Supabase (public.events & event_tags)...");
 
-    // Filter out excluded events
+    // Filter out excluded events and events that are already unchanged in DB
     const cleanPayload: Record<string, NormalizedEventItem[]> = {};
     for (const [source, list] of Object.entries(enrichedEventsBySource)) {
-      cleanPayload[source] = list.filter((ev) => !ev._excluded);
+      cleanPayload[source] = list.filter((ev) => !ev._excluded && ev.db_status !== "unchanged");
     }
 
     try {
@@ -503,6 +787,9 @@ export default function EtlPage() {
     setEnrichedEventsBySource((prev) => {
       const sourceList = prev[source] ? [...prev[source]] : [];
       if (sourceList[index]) {
+        // Events already unmodified in DB cannot be toggled for insertion
+        if (sourceList[index].db_status === "unchanged") return prev;
+
         sourceList[index] = {
           ...sourceList[index],
           _excluded: !sourceList[index]._excluded,
@@ -515,12 +802,15 @@ export default function EtlPage() {
     });
   };
 
-  // Select All in Step 4
+  // Select All in Step 4 (only new or updated events)
   const handleSelectAllForPersist = () => {
     setEnrichedEventsBySource((prev) => {
       const next: Record<string, NormalizedEventItem[]> = {};
       for (const [src, list] of Object.entries(prev)) {
-        next[src] = (list || []).map((ev) => ({ ...ev, _excluded: false }));
+        next[src] = (list || []).map((ev) => ({
+          ...ev,
+          _excluded: ev.db_status === "unchanged" ? true : false,
+        }));
       }
       return next;
     });
@@ -599,7 +889,12 @@ export default function EtlPage() {
     return matchesSearch && matchesCat;
   });
 
-  const totalSelectedToPersist = allEnrichedEvents.filter((ev) => !ev._excluded).length;
+  const totalSelectedToPersist = allEnrichedEvents.filter(
+    (ev) => !ev._excluded && ev.db_status !== "unchanged"
+  ).length;
+  const totalUnchangedInDb = allEnrichedEvents.filter(
+    (ev) => ev.db_status === "unchanged"
+  ).length;
 
   return (
     <div className="space-y-6">
@@ -875,7 +1170,7 @@ export default function EtlPage() {
         >
           <Terminal className="w-4 h-4" />
           Consola en Vivo & Logs
-          {isRunningAll && <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />}
+          {(isRunningAll || isStepLoading) && <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />}
         </button>
 
         <button
@@ -906,6 +1201,46 @@ export default function EtlPage() {
       {/* TAB 1: STEP-BY-STEP INTERACTIVE WIZARD */}
       {activeTab === "step" && (
         <div className="space-y-6">
+          {/* Wizard Header Bar & Recovery Tools */}
+          <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-zinc-100/80 dark:bg-zinc-900/60 rounded-xl border border-zinc-200 dark:border-zinc-800 text-xs">
+            <div className="flex items-center gap-2 text-zinc-700 dark:text-zinc-300">
+              <Layers className="w-4 h-4 text-purple-600 dark:text-purple-400" />
+              <span className="font-semibold">Estado del Asistente:</span>
+              <span className="text-zinc-500 dark:text-zinc-400">
+                {currentStep === 1 && "Paso 1: Extracción de Eventos"}
+                {currentStep === 2 && "Paso 2: Deduplicación cruzada"}
+                {currentStep === 3 && "Paso 3: Enriquecimiento con IA"}
+                {currentStep === 4 && "Paso 4: Revisión manual & Filtros"}
+                {currentStep === 5 && "Paso 5: Persistencia en Supabase"}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleRecoverFromServer}
+                isLoading={isStepLoading}
+                className="h-7 text-xs gap-1"
+                title="Recupera el último paso ejecutado que fue guardado en disco en el servidor"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Recuperar del Servidor
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={handleResetWizard}
+                disabled={isStepLoading || isRunningAll}
+                className="h-7 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30 gap-1"
+                title="Reiniciar el asistente al Paso 1 y limpiar la memoria local"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Reiniciar Asistente
+              </Button>
+            </div>
+          </div>
+
           {/* Step Progress Bar */}
           <div className="grid grid-cols-5 gap-2 text-center text-xs">
             {[
@@ -1291,7 +1626,7 @@ export default function EtlPage() {
                       className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5"
                     >
                       <CheckCheck className="w-3.5 h-3.5" />
-                      Persistir {totalSelectedToPersist} Eventos Seleccionados
+                      Persistir {totalSelectedToPersist} Eventos Nuevos en Supabase
                     </Button>
                   </div>
                 </div>
@@ -1329,7 +1664,10 @@ export default function EtlPage() {
                 <div className="flex flex-wrap justify-between items-center text-xs text-zinc-500 gap-2 pb-2 border-b border-zinc-100 dark:border-zinc-800">
                   <span className="font-medium text-zinc-700 dark:text-zinc-300">
                     Mostrando {filteredEnrichedEvents.length} de {allEnrichedEvents.length} eventos (
-                    <strong className="text-emerald-600 dark:text-emerald-400 font-bold">{totalSelectedToPersist}</strong> seleccionados para inserción)
+                    <strong className="text-emerald-600 dark:text-emerald-400 font-bold">{totalSelectedToPersist}</strong> nuevos seleccionados para inserción
+                    {totalUnchangedInDb > 0 && (
+                      <span className="text-zinc-500 font-normal"> · {totalUnchangedInDb} ya en BD</span>
+                    )})
                   </span>
 
                   <div className="flex items-center gap-2">
@@ -1338,7 +1676,7 @@ export default function EtlPage() {
                       onClick={handleSelectAllForPersist}
                       className="px-2.5 py-1 rounded-lg bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 text-[11px] font-semibold transition-colors"
                     >
-                      Seleccionar Todos
+                      Seleccionar Todos los Nuevos
                     </button>
                     {aiDuplicatesList.length > 0 && (
                       <button
@@ -1365,28 +1703,39 @@ export default function EtlPage() {
                     <div
                       key={`${ev._sourceKey}-${ev._sourceIdx}`}
                       className={`p-4 rounded-xl border transition-all ${
-                        ev._excluded
+                        ev.db_status === "unchanged"
+                          ? "bg-zinc-50 dark:bg-zinc-900/20 border-zinc-200 dark:border-zinc-800 opacity-75"
+                          : ev._excluded
                           ? "bg-zinc-50 dark:bg-zinc-900/30 border-zinc-200 dark:border-zinc-800 opacity-60"
                           : "bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 hover:border-purple-300 dark:hover:border-purple-800"
                       }`}
                     >
                       <div className="flex items-start justify-between gap-4">
                         <div className="flex items-start gap-3 flex-1">
-                          <div
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleExcludeEvent(ev._sourceKey, ev._sourceIdx);
-                            }}
-                            className="mt-1 cursor-pointer select-none p-0.5 rounded hover:bg-purple-100 dark:hover:bg-purple-950/50 transition-colors"
-                            title={ev._excluded ? "Haz clic para incluir en Supabase" : "Haz clic para excluir de Supabase"}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={!ev._excluded}
-                              onChange={() => toggleExcludeEvent(ev._sourceKey, ev._sourceIdx)}
-                              className="rounded text-purple-600 focus:ring-purple-500 w-4 h-4 cursor-pointer"
-                            />
-                          </div>
+                          {ev.db_status === "unchanged" ? (
+                            <div
+                              className="mt-1 p-0.5 rounded text-zinc-400 dark:text-zinc-500 cursor-default select-none"
+                              title="Ya registrado en Base de Datos (sin cambios, no requiere re-inserción)"
+                            >
+                              <CheckCircle2 className="w-4 h-4 text-zinc-400 dark:text-zinc-500" />
+                            </div>
+                          ) : (
+                            <div
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleExcludeEvent(ev._sourceKey, ev._sourceIdx);
+                              }}
+                              className="mt-1 cursor-pointer select-none p-0.5 rounded hover:bg-purple-100 dark:hover:bg-purple-950/50 transition-colors"
+                              title={ev._excluded ? "Haz clic para incluir en Supabase" : "Haz clic para excluir de Supabase"}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={!ev._excluded}
+                                onChange={() => toggleExcludeEvent(ev._sourceKey, ev._sourceIdx)}
+                                className="rounded text-purple-600 focus:ring-purple-500 w-4 h-4 cursor-pointer"
+                              />
+                            </div>
+                          )}
 
                           {/* Image thumbnail if available */}
                           {ev.image_urls && ev.image_urls.length > 0 && (
@@ -1405,6 +1754,21 @@ export default function EtlPage() {
                               <h3 className="font-bold text-sm text-zinc-900 dark:text-zinc-50 truncate">
                                 {ev.title}
                               </h3>
+                              {ev.db_status === "unchanged" && (
+                                <Badge variant="default" className="text-[10px] bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 gap-1">
+                                  <CheckCircle2 className="w-3 h-3 text-zinc-500" /> En BD (Sin cambios)
+                                </Badge>
+                              )}
+                              {ev.db_status === "new" && (
+                                <Badge variant="success" className="text-[10px] gap-1">
+                                  ✨ Nuevo
+                                </Badge>
+                              )}
+                              {ev.db_status === "updated" && (
+                                <Badge variant="warning" className="text-[10px] gap-1">
+                                  🔄 Actualización
+                                </Badge>
+                              )}
                               <Badge variant="purple" className="text-[10px]">
                                 {ev.category}
                               </Badge>
@@ -1604,6 +1968,73 @@ export default function EtlPage() {
               </CardContent>
             </Card>
           )}
+
+          {/* Real-time Execution Console inside Step Wizard */}
+          <Card className="bg-zinc-950 text-zinc-50 border-zinc-800 shadow-xl mt-6">
+            <CardHeader className="border-b border-zinc-800/80 py-3 px-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Terminal className="w-4 h-4 text-purple-400" />
+                  <span className="font-mono text-xs font-bold uppercase tracking-wider text-zinc-300">
+                    Consola de Ejecución & Logs en Tiempo Real
+                  </span>
+                  {isStepLoading && (
+                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-mono bg-purple-950 text-purple-300 border border-purple-800 animate-pulse">
+                      <span className="h-1.5 w-1.5 rounded-full bg-purple-400 animate-ping" />
+                      Procesando en vivo...
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setAutoScrollLogs(!autoScrollLogs)}
+                    className={`text-[11px] font-mono px-2 py-0.5 rounded transition-colors ${
+                      autoScrollLogs ? "bg-purple-900/60 text-purple-300" : "bg-zinc-800 text-zinc-400"
+                    }`}
+                  >
+                    Auto-Scroll: {autoScrollLogs ? "ON" : "OFF"}
+                  </button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+                    onClick={() => setLogs([])}
+                  >
+                    Limpiar
+                  </Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="p-4">
+              <div className="font-mono text-xs space-y-1.5 max-h-[360px] overflow-y-auto pr-2">
+                {logs.map((log) => (
+                  <div key={log.id} className="flex items-start gap-2.5 leading-relaxed">
+                    <span className="text-zinc-500 select-none flex-shrink-0">[{log.timestamp}]</span>
+                    {log.source && (
+                      <span className="text-[10px] font-semibold text-purple-400/90 bg-purple-950/60 px-1.5 py-0.2 rounded border border-purple-800/40 flex-shrink-0">
+                        [{log.source}]
+                      </span>
+                    )}
+                    <span
+                      className={`font-bold uppercase text-[10px] px-1.5 py-0.2 rounded flex-shrink-0 ${
+                        log.level === "success"
+                          ? "bg-emerald-950 text-emerald-400"
+                          : log.level === "error"
+                          ? "bg-red-950 text-red-400"
+                          : log.level === "warning"
+                          ? "bg-amber-950 text-amber-400"
+                          : "bg-zinc-800 text-zinc-300"
+                      }`}
+                    >
+                      {log.level}
+                    </span>
+                    <span className="text-zinc-200 break-words flex-1">{log.message}</span>
+                  </div>
+                ))}
+                <div ref={stepTerminalEndRef} />
+              </div>
+            </CardContent>
+          </Card>
         </div>
       )}
 
@@ -1633,11 +2064,11 @@ export default function EtlPage() {
                 <div className="flex items-center gap-1.5">
                   <span
                     className={`flex h-2 w-2 rounded-full ${
-                      isRunningAll ? "bg-emerald-500 animate-pulse" : "bg-zinc-500"
+                      isRunningAll || isStepLoading ? "bg-emerald-500 animate-pulse" : "bg-zinc-500"
                     }`}
                   />
                   <span className="text-[11px] font-mono text-zinc-400">
-                    {isRunningAll ? "Ejecutando..." : "Inactivo"}
+                    {isRunningAll ? "Ejecutando pipeline..." : isStepLoading ? "Ejecutando paso..." : "Inactivo"}
                   </span>
                 </div>
               </div>
@@ -2061,9 +2492,12 @@ export default function EtlPage() {
           <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-200 space-y-2">
             <p className="font-bold">Resumen de la operación:</p>
             <ul className="list-disc pl-4 space-y-1">
-              <li>Se insertarán o actualizarán <strong>{totalSelectedToPersist}</strong> eventos en la tabla <code>public.events</code>.</li>
+              <li>Se insertarán o actualizarán <strong>{totalSelectedToPersist}</strong> eventos nuevos/modificados en la tabla <code>public.events</code>.</li>
               <li>Se normalizarán e insertarán las relaciones en <code>public.event_tags</code>.</li>
-              <li>Los eventos excluidos ({allEnrichedEvents.length - totalSelectedToPersist}) serán ignorados.</li>
+              {totalUnchangedInDb > 0 && (
+                <li>Los <strong>{totalUnchangedInDb}</strong> eventos ya existentes en BD se conservan intactos sin duplicarse ni re-escribirse.</li>
+              )}
+              <li>Los eventos excluidos o duplicados de IA serán ignorados.</li>
             </ul>
           </div>
 
